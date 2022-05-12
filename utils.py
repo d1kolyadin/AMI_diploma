@@ -1,12 +1,6 @@
 import numpy as np
-import pywt
 from r_pca import R_pca
 import scipy.sparse
-
-try:
-    from pylab import plt
-except ImportError:
-    print('Unable to import pylab. R_pca.plot_fit() will not work.')
     
 def values(func, left, right, n):
     return func(np.linspace(left, right, n))
@@ -416,3 +410,98 @@ def iwtt_apply_rpca_v2(input_vector, d, filters, sparse_parts, modes, ranks):
         prod_modes *= modes[k]
     
     return result.flatten(order='F')
+
+def wtt_rpca_v3(
+    input_vector,
+    d,
+    modes,
+    ranks=None,
+    eps=None,
+    lambda_scale=1.0,
+    verbose=True,
+):
+    
+    filters = []
+    sparse_parts = []
+    prod_modes = input_vector.size
+    
+    assert len(modes) == d
+    if ranks is not None:
+        assert len(ranks) == d - 1
+    if eps is not None:
+        assert 0 <= eps <= 1
+    assert prod_modes == np.prod(modes)
+        
+    true_ranks = []
+    
+    #сначала делаем предобработку за счёт RPCA
+    #затем --- полученную по итогу малоранговую часть раскладываем как обычно
+    
+    A = input_vector
+    for k in range(d):
+        A = A.reshape((-1, prod_modes // modes[k]), order='F')
+
+        rpca = R_pca(A) 
+        rpca.lmbda = rpca.lmbda * lambda_scale #делаю уклон в сторону sparse'овости        
+        L, S = rpca.fit(
+            max_iter=4000,
+            iter_print=400,
+            verbose=verbose
+        )
+        if A.shape[0] <= A.shape[1]:
+            sparse_parts.append(scipy.sparse.csr_matrix(S))
+        else:
+            sparse_parts.append(scipy.sparse.csc_matrix(S)) 
+        A = L
+        prod_modes //= modes[k]
+
+        if verbose:
+            print("Step", k, "out of", d, "(preprocessing)")
+            print(
+                "Sparsity check:",
+                "\nS.size = ", S.size,
+                "\nnnz(S) = ", np.count_nonzero(S),
+                sep=''
+            )
+
+    smoothed_signal = A.flatten(order='F')
+    filters, true_ranks = wtt_filter(smoothed_signal, d, modes, ranks, eps)
+    
+    return filters, sparse_parts, true_ranks
+
+def wtt_apply_rpca_v3(input_vector, d, filters, sparse_parts, modes, ranks):
+    prod_modes = input_vector.size
+    
+    assert len(filters) == d
+    assert len(sparse_parts) == d
+    assert len(modes) == d
+    assert len(ranks) == d - 1
+    assert prod_modes == np.prod(modes)
+    
+    A = input_vector
+    for k in range(d):
+        A = A.reshape((-1, prod_modes // modes[k]), order='F')
+                
+        A = np.asarray(A - sparse_parts[k])
+        prod_modes //= modes[k]
+        
+    smoothed_signal = A.flatten(order='F')
+    coeffs = wtt_apply(smoothed_signal, d, filters, modes, ranks)
+    return coeffs
+
+def iwtt_apply_rpca_v3(input_vector, d, filters, sparse_parts, modes, ranks):
+    prod_modes = input_vector.size
+    
+    assert len(filters) == d
+    assert len(sparse_parts) == d
+    assert len(modes) == d
+    assert len(ranks) == d - 1
+    assert prod_modes == np.prod(modes)
+    
+    A = iwtt_apply(input_vector, d, filters, modes, ranks)
+    for k in range(d - 1, -1, -1):
+        A = A.reshape((prod_modes, -1), order='F')
+        A = np.asarray(A + sparse_parts[k])
+        prod_modes //= modes[k]
+        
+    return A.flatten(order='F')
