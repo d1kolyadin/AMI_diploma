@@ -300,7 +300,7 @@ def wtt_rpca_preprocessing(
         
         print("Current step", k)
         
-        A = A.reshape((-1, prod_modes // modes[k]))
+        A = A.reshape((-1, prod_modes // modes[k]), order='F')
         rpca = R_pca_tensorised(A)
         rpca.lmbda *= lambda_scale
         L, S, r = rpca.fit_mode(
@@ -313,9 +313,14 @@ def wtt_rpca_preprocessing(
             sparse_parts.append(scipy.sparse.csr_matrix(S))
         else:
             sparse_parts.append(scipy.sparse.csc_matrix(S))
-        ranks.append(r)
+
         A = L
         prod_modes //= modes[k]
         
+        if k + 1 < d:
+            ranks.append(r)
+        
     return A.flatten(order='F'), sparse_parts, ranks
+
+
     

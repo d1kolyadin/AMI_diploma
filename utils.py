@@ -505,3 +505,43 @@ def iwtt_apply_rpca_v3(input_vector, d, filters, sparse_parts, modes, ranks):
         prod_modes //= modes[k]
         
     return A.flatten(order='F')
+
+def subtract_sparse_parts(
+    input_vector,
+    d,
+    modes,
+    sparse_parts
+):
+    prod_modes = input_vector.size
+    A = input_vector
+
+    assert prod_modes == np.prod(modes)
+    assert len(modes) == len(sparse_parts) == d
+    
+    for k in range(d):
+        A = A.reshape((-1, prod_modes // modes[k]), order='F')
+        assert A.shape == sparse_parts[k].shape
+        A = np.asarray(A - sparse_parts[k])
+        prod_modes //= modes[k]
+    
+    return A.flatten(order='F')
+
+def add_sparse_parts(
+    input_vector,
+    d,
+    modes,
+    sparse_parts
+):
+    prod_modes = input_vector.size
+    A = input_vector
+
+    assert prod_modes == np.prod(modes)
+    assert len(modes) == len(sparse_parts) == d
+    
+    for k in range(d - 1, -1, -1):
+        A = A.reshape((prod_modes, -1), order='F')
+        assert A.shape == sparse_parts[k].shape
+        A = np.asarray(A + sparse_parts[k])
+        prod_modes //= modes[k]
+    
+    return A.flatten(order='F')
