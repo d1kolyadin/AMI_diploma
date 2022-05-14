@@ -307,6 +307,7 @@ def wtt_rpca_preprocessing(
             k + 1,
             modes[:k + 1],
             ranks,
+            max_iter=2,
             verbose=False
         )
         if S.shape[0] < S.shape[1]:
