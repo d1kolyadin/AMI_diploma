@@ -212,20 +212,25 @@ class R_pca_tensorised:
                 )
         carriages[0] = np.squeeze(carriages[0])
         
-        #будем надеяться, что d не будет превышать 50
-        einsum_str = self.alphabet[0] + self.alphabet[1]
-        position = 1
-        for k in range(mode - 1):
-            einsum_str += ','
-            einsum_str += self.alphabet[position]
-            einsum_str += self.alphabet[position + 1]
-            einsum_str += self.alphabet[position + 2]
-            position += 2
+        #einsum_str = self.alphabet[0] + self.alphabet[1]
+        #position = 1
+        #for k in range(mode - 1):
+        #    einsum_str += ','
+        #    einsum_str += self.alphabet[position]
+        #    einsum_str += self.alphabet[position + 1]
+        #    einsum_str += self.alphabet[position + 2]
+        #    position += 2
+            
+            
+        #print("str to einsum:", einsum_str)
+        #print("shapes of summands:", *[s.shape for s in carriages])
         
-        result = np.einsum(einsum_str, *carriages, order='F')
+        #result = np.einsum(einsum_str, *carriages, order='F')
         
-        #print([t.shape for t in carriages])
-        #print(result.shape)
+        result = carriages[0]
+        for c in carriages[1:]:
+            result = np.dot(result, c.reshape((c.shape[0], -1), order='F'))
+            result = result.reshape((-1, c.shape[2]), order='F')
         
         return result, r_next
         
@@ -257,6 +262,7 @@ class R_pca_tensorised:
             A = self.D - Sk + self.mu_inv * Yk
             A = A.reshape(first_modes + [-1], order='F')
             
+            #print("Current fit_mode iter:", iter)
             #print("Before calling tt_rouning_step:", A.shape)
             
             Lk, rk = self.tt_rounding_step(
@@ -286,7 +292,9 @@ def wtt_rpca_preprocessing(
     input_vector,
     d,
     modes,
-    lambda_scale=1.
+    lambda_scale=1.,
+    tol=None,
+    max_iter=1000
 ):
     ranks = []
     sparse_parts = []
@@ -307,7 +315,8 @@ def wtt_rpca_preprocessing(
             k + 1,
             modes[:k + 1],
             ranks,
-            max_iter=2,
+            tol=tol,
+            max_iter=max_iter,
             verbose=False
         )
         if S.shape[0] < S.shape[1]:
