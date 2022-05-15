@@ -14,9 +14,7 @@ except NameError:
     # Python 3: 'range' is iterative - no need for 'xrange'
     pass
 
-import string
 import scipy.sparse
-
 
 class R_pca:
 
@@ -104,45 +102,306 @@ class R_pca:
             if not axis_on:
                 plt.axis('off')
 
-def tt_svd(tensor, eps, max_rank):
-    """
-    Input
-        tensor: np array
-        eps: desired difference in frobenius norm between tensor and TT approximation
-        max_rank: upper hard limit on each TT rank (it has priority over eps)
+def wtt_rpca_v1(
+    input_vector,
+    d,
+    modes,
+    ranks=None,
+    eps=None,
+    lambda_scale=1.0,
+    verbose=True,
+):
+    
+    filters = []
+    prod_modes = input_vector.size
+    
+    assert len(modes) == d
+    if ranks is not None:
+        assert len(ranks) == d - 1
+    if eps is not None:
+        assert 0 <= eps <= 1
+    assert prod_modes == np.prod(modes)
+        
+    true_ranks = []
+    
+    r_prev = 1
+    A = input_vector
+    for k in range(d):
+        A = A.reshape((r_prev * modes[k], prod_modes // modes[k]), order='F')
+        
+        #делаем разложение A = L + S, L --- малоранговая, S --- разреженная
+        #затем: L = U Sigma V^T --- SVD для L. Ненулевых сингулярных чисел будет мало (надеемся)
+        #U^T A = Sigma V^T + U^T S. Старшие строки оставляем для дальнейшей работы.
+        #Надеемся, что младшие строки U^T S тоже будут разреженными...
+        
+        rpca = R_pca(A) 
+        
+        rpca.lmbda = rpca.lmbda * lambda_scale #делаю уклон в сторону sparse'овости
+        
+        if verbose:
+            print("Step", k, "out of", d)
+        
+        L, S = rpca.fit(
+            max_iter=4000,
+            iter_print=400,
+            verbose=verbose
+        )
+        
+        if A.shape[0] <= A.shape[1]:
+            u, sigmas, vt = np.linalg.svd(L, full_matrices=False)
+        else:
+            u, sigmas, vt = np.linalg.svd(L, full_matrices=True)
+            
+        r_given = None if ranks is None else (1 if k == d - 1 else ranks[k])
+        r_eps = min(A.shape) if eps is None else max(1, (sigmas > eps * sigmas[0]).sum())
+        if r_given is not None:
+            r_cur = min(r_given, r_eps)
+        else:
+            r_cur = r_eps
+        
+        filters.append(u)
+        
+        if verbose:
+            
+            print(
+                "Low-rank check:",
+                "\nr_cur = ", r_cur,
+                "\n#singular values = ", sigmas.size,
+                "\n#nnz singlular values = ", (sigmas > 1e-10).sum(),
+                sep=''
+            )
 
-    Output
-        carriages: list of cores that give TT decomposition of tensor
-    """
+            print(
+                "Sparsity check:",
+                "\nS.size = ", S.size,
+                "\nnnz(S) = ", np.count_nonzero(S),
+                "\nnnz(u.T @ S) = ", np.count_nonzero(u.T @ S),
+                sep=''
+            )
 
-    remaining = tensor
-    d = len(tensor.shape)
-    N = tensor.size
-    r = 1
+        assert u.shape[0] == u.shape[1] == r_prev * modes[k]
+        if k < d - 1:
+            assert r_cur <= r_prev * modes[k]
 
-    eps = eps / np.sqrt(d - 1) #потому что ошибка в tt_svd составляет
-    #sqrt(sum_{k <= d - 1} квадрат ошибки в svd для A_k) = sqrt(d - 1) * ошибка в каждом svd
+        if k < d - 1:
+            A = (u.T @ A)[:r_cur,:]
+            #A = (u.T @ (L + S))[:r_cur,:]
+            prod_modes //= modes[k]
+            true_ranks.append(r_cur)
+            r_prev = r_cur
+    
+    return filters, true_ranks
 
-    carriages = []
+def wtt_rpca_v2(
+    input_vector,
+    d,
+    modes,
+    ranks=None,
+    eps=None,
+    lambda_scale=1.0,
+    verbose=True,
+):
+    
+    filters = []
+    sparse_parts = []
+    prod_modes = input_vector.size
+    
+    assert len(modes) == d
+    if ranks is not None:
+        assert len(ranks) == d - 1
+    if eps is not None:
+        assert 0 <= eps <= 1
+    assert prod_modes == np.prod(modes)
+        
+    true_ranks = []
+    
+    r_prev = 1
+    A = input_vector
+    for k in range(d):
+        A = A.reshape((r_prev * modes[k], prod_modes // modes[k]), order='F')
+        
+        #делаем разложение A = L + S, L --- малоранговая, S --- разреженная
+        #затем: L = U Sigma V^T --- SVD для L. Ненулевых сингулярных чисел будет мало (надеемся)
+        #сохраняем S целиком, L раскладываем как обычно
+        
+        rpca = R_pca(A) 
+        
+        rpca.lmbda = rpca.lmbda * lambda_scale #делаю уклон в сторону sparse'овости
+        
+        if verbose:
+            print("Step", k, "out of", d)
+        
+        L, S = rpca.fit(
+            max_iter=4000,
+            iter_print=400,
+            verbose=verbose
+        )
+        
+        if A.shape[0] <= A.shape[1]:
+            u, sigmas, vt = np.linalg.svd(L, full_matrices=False)
+        else:
+            u, sigmas, vt = np.linalg.svd(L, full_matrices=True)
+            
+        r_given = None if ranks is None else (1 if k == d - 1 else ranks[k])
+        r_eps = min(A.shape) if eps is None else max(1, (sigmas > eps * sigmas[0]).sum())
+        if r_given is not None:
+            r_cur = min(r_given, r_eps)
+        else:
+            r_cur = r_eps
+        
+        filters.append(u)
+        sparse_parts.append(scipy.sparse.csr_matrix(S))
+        #скорее всего, строк меньше, чем столбцов, так что csr
+        
+        if verbose:
+            print(
+                "Low-rank check:",
+                "\nr_cur = ", r_cur,
+                "\n#singular values = ", sigmas.size,
+                "\n#nnz singlular values = ", (sigmas > 1e-10).sum(),
+                sep=''
+            )
+            print(
+                "Sparsity check:",
+                "\nS.size = ", S.size,
+                "\nnnz(S) = ", np.count_nonzero(S),
+                sep=''
+            )
 
-    for k in range(d - 1):
-        matrix_to_svd = remaining.reshape((r * tensor.shape[k], N // tensor.shape[k]), order='F')
-        u, sigmas, vt = np.linalg.svd(matrix_to_svd, full_matrices=False)
+        assert u.shape[0] == u.shape[1] == r_prev * modes[k]
+        if k < d - 1:
+            assert r_cur <= r_prev * modes[k]
 
-        curr_r = min(sigmas.size, max_rank)
-        error_squared = np.sum(np.square(sigmas[curr_r:]))
-        while curr_r >= 1 and error_squared + np.square(sigmas[curr_r - 1]) < np.square(eps):
-            error_squared = error_squared + np.square(sigmas[curr_r - 1])
-            curr_r -= 1
+        if k < d - 1:
+            A = (u.T @ L)[:r_cur,:]
+            prod_modes //= modes[k]
+            true_ranks.append(r_cur)
+            r_prev = r_cur
+    
+    return filters, sparse_parts, true_ranks
 
-        carriages.append(u[:,:curr_r].reshape((r, tensor.shape[k], curr_r), order='F'))
-        remaining = np.diag(sigmas[:curr_r]) @ vt[:curr_r,:]
-        N = N // tensor.shape[k]
-        r = curr_r
+def wtt_apply_rpca_v2(input_vector, d, filters, sparse_parts, modes, ranks):
+    prod_modes = input_vector.size
+    
+    assert len(filters) == d
+    assert len(sparse_parts) == d
+    assert len(modes) == d
+    assert len(ranks) == d - 1
+    assert prod_modes == np.prod(modes)
+        
+    tails = []
+    A = input_vector
+    r_prev = 1
+    for k in range(d):
+        A = A.reshape((r_prev * modes[k], prod_modes // modes[k]), order='F')
+        A = np.asarray(A - sparse_parts[k])
+        A = filters[k].T @ A
 
-    carriages.append(remaining.reshape((r, tensor.shape[-1], 1), order='F'))
+        assert A.shape[0] == r_prev * modes[k]
+        if k < d - 1:
+            assert ranks[k] <= r_prev * modes[k]
+                
+        if k < d - 1:
+            tails.append(A[ranks[k]:,:])
+            A = A[:ranks[k],:]
+            prod_modes //= modes[k]
+            r_prev = ranks[k]
+        
+    result = A
+    for k in range(d - 2, -1, -1):        
+        result = np.vstack([
+            result.reshape((ranks[k], prod_modes), order='F'),
+            tails[k]
+        ])
+        prod_modes *= modes[k]
+    
+    return result.flatten(order='F')
 
-    return carriages
+def iwtt_apply_rpca_v2(input_vector, d, filters, sparse_parts, modes, ranks):
+    prod_modes = input_vector.size
+    
+    assert len(filters) == d
+    assert len(sparse_parts) == d
+    assert len(modes) == d
+    assert len(ranks) == d - 1
+    assert prod_modes == np.prod(modes)
+        
+    tails = []
+    A = input_vector
+    r_prev = 1
+    for k in range(d):
+        A = A.reshape((r_prev * modes[k], prod_modes // modes[k]), order='F')
+
+        assert A.shape[0] == r_prev * modes[k]
+        if k < d - 1:
+            assert ranks[k] <= r_prev * modes[k]
+                
+        if k < d - 1:
+            tails.append(A[ranks[k]:,:])
+            A = A[:ranks[k],:]
+            prod_modes //= modes[k]
+            r_prev = ranks[k]
+        
+    #prod_modes == modes[-1] в конце
+    result = A
+    for k in range(d - 1, -1, -1):
+        r_prev = 1 if k == 0 else ranks[k - 1]
+        if k == d - 1:
+            result = (filters[k] @ result)
+        else:
+            result = (filters[k] @ np.vstack([
+                result,
+                tails[k]
+            ]))
+        result = np.asarray(result + sparse_parts[k])
+        result = result.reshape((r_prev, prod_modes), order='F')
+        prod_modes *= modes[k]
+    
+    return result.flatten(order='F')
+
+def wtt_rpca_preprocessing_v1(
+    input_vector,
+    d,
+    modes,
+    lambda_scale=1.0,
+    verbose=True,
+):
+    
+    sparse_parts = []
+    prod_modes = input_vector.size
+    
+    assert len(modes) == d
+    assert prod_modes == np.prod(modes)
+    
+    A = input_vector
+    for k in range(d):
+        A = A.reshape((-1, prod_modes // modes[k]), order='F')
+
+        rpca = R_pca(A) 
+        rpca.lmbda = rpca.lmbda * lambda_scale      
+        L, S = rpca.fit(
+            max_iter=4000,
+            iter_print=400,
+            verbose=verbose
+        )
+        if A.shape[0] <= A.shape[1]:
+            sparse_parts.append(scipy.sparse.csr_matrix(S))
+        else:
+            sparse_parts.append(scipy.sparse.csc_matrix(S)) 
+        A = L
+        prod_modes //= modes[k]
+
+        if verbose:
+            print("Step", k, "out of", d, "(preprocessing)")
+            print(
+                "Sparsity check:",
+                "\nS.size = ", S.size,
+                "\nnnz(S) = ", np.count_nonzero(S),
+                sep=''
+            )
+
+    smoothed_signal = A.flatten(order='F')
+    return smoothed_signal, sparse_parts
 
 class R_pca_tensorised:
 
@@ -164,8 +423,6 @@ class R_pca_tensorised:
         else:
             self.lmbda = 1 / np.sqrt(np.max(self.D.shape))
             
-        self.alphabet = string.ascii_letters 
-
     @staticmethod
     def frobenius_norm(M):
         return np.linalg.norm(M, ord='fro')
@@ -186,6 +443,7 @@ class R_pca_tensorised:
             mode,
             first_modes,
             prev_ranks,
+            r_up,
             tau
         ):
         
@@ -210,36 +468,25 @@ class R_pca_tensorised:
                 carriages.append(
                     svd_thr.reshape((r_prev, first_modes[k], -1), order='F')
                 )
+                if r_up is not None and r_up < r_next:
+                    r_next = r_up
         carriages[0] = np.squeeze(carriages[0])
         
-        #einsum_str = self.alphabet[0] + self.alphabet[1]
-        #position = 1
-        #for k in range(mode - 1):
-        #    einsum_str += ','
-        #    einsum_str += self.alphabet[position]
-        #    einsum_str += self.alphabet[position + 1]
-        #    einsum_str += self.alphabet[position + 2]
-        #    position += 2
-            
-            
-        #print("str to einsum:", einsum_str)
         #print("shapes of summands:", *[s.shape for s in carriages])
-        
-        #result = np.einsum(einsum_str, *carriages, order='F')
-        
+
         result = carriages[0]
         for c in carriages[1:]:
             result = np.dot(result, c.reshape((c.shape[0], -1), order='F'))
             result = result.reshape((-1, c.shape[2]), order='F')
         
         return result, r_next
-        
 
     def fit_mode(
             self, 
             mode,
             first_modes,
             prev_ranks,
+            r_up=None,
             tol=None,
             max_iter=1000,
             iter_print=100,
@@ -262,14 +509,12 @@ class R_pca_tensorised:
             A = self.D - Sk + self.mu_inv * Yk
             A = A.reshape(first_modes + [-1], order='F')
             
-            #print("Current fit_mode iter:", iter)
-            #print("Before calling tt_rouning_step:", A.shape)
-            
             Lk, rk = self.tt_rounding_step(
                 A,
                 mode,
                 first_modes,
                 prev_ranks,
+                r_up,
                 self.mu_inv
             )
             Lk = Lk.reshape(self.D.shape, order='F')
@@ -288,10 +533,11 @@ class R_pca_tensorised:
         self.r = rk
         return Lk, Sk, rk
     
-def wtt_rpca_preprocessing(
+def wtt_rpca_preprocessing_v2(
     input_vector,
     d,
     modes,
+    upper_ranks=None,
     lambda_scale=1.,
     tol=None,
     max_iter=1000
@@ -303,18 +549,22 @@ def wtt_rpca_preprocessing(
     
     assert prod_modes == np.prod(modes)
     assert len(modes) == d
+    if upper_ranks is not None:
+        assert len(upper_ranks) == d - 1
     
     for k in range(d):
         
-        print("Current step", k)
+        #print("Current step", k)
         
         A = A.reshape((-1, prod_modes // modes[k]), order='F')
         rpca = R_pca_tensorised(A)
         rpca.lmbda *= lambda_scale
+        r_up = None if upper_ranks is None else (1 if k + 1 == d else upper_ranks[k])
         L, S, r = rpca.fit_mode(
             k + 1,
             modes[:k + 1],
             ranks,
+            r_up=r_up,
             tol=tol,
             max_iter=max_iter,
             verbose=False
