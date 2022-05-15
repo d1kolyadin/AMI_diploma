@@ -1,5 +1,4 @@
 import numpy as np
-from r_pca import R_pca
 import scipy.sparse
     
 def values(func, left, right, n):
@@ -75,6 +74,9 @@ def vector_to_matrix(v, d, modes):
     result = np.transpose(result, axes_transpose)
     result = np.reshape(result, (np.prod(new_modes), np.prod(new_modes)), order='F')
     return result, new_modes
+
+def get_vector_modes(modes):
+    return [m ** 2 for m in modes]
 
 def subtract_sparse_parts(
     input_vector,
