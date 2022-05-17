@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.sparse
+import pywt
     
 def values(func, left, right, n):
     return func(np.linspace(left, right, n))
@@ -117,3 +118,33 @@ def add_sparse_parts(
         prod_modes //= modes[k]
     
     return A.flatten(order='F')
+
+def restore_matrices(
+    vectors,
+    d,
+    vector_modes
+):
+    assert len(vectors) == d
+
+    matrices = []
+    for v in vectors:
+        matrices.append(
+            vector_to_matrix(
+                v.toarray().flatten(order='F'),
+                d,
+                vector_modes
+            )[0]
+        )
+    return matrices
+
+def psnr(m1, m2, max_i=255.0):
+    assert m1.shape == m2.shape
+    
+    #mse = np.linalg.norm(m1 - m2) ** 2 / np.prod(m1.shape)
+    mse = np.mean(np.square(m1 - m2))
+    return 20 * np.log10(max_i) - 10 * np.log10(mse)
+
+def threshold_2d_coeffs(coeffs, thr):
+    arr, slc = pywt.coeffs_to_array(coeffs)
+    arr = pywt.threshold(arr, thr, mode='hard')
+    return pywt.array_to_coeffs(arr, slc, output_format='wavedec2')

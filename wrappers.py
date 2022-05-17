@@ -141,15 +141,15 @@ class RPCA_preprocessing_wrapper:
     ):
         
         if self.alg_type == 1:
-            low_rank, sparse_parts = r_pca.wtt_rpca_preprocessing_v1(
+            low_rank, sparse_parts, ranks = r_pca.wtt_rpca_preprocessing_v1(
                 input_vector,
                 d,
                 modes,
+                upper_ranks,
                 lambda_scale,
                 max_iter,
                 False
             )
-            ranks = []
         elif self.alg_type == 2:
             low_rank, sparse_parts, ranks = r_pca.wtt_rpca_preprocessing_v2(
                 input_vector,

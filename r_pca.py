@@ -43,16 +43,21 @@ class R_pca:
     def shrink(M, tau):
         return np.sign(M) * np.maximum((np.abs(M) - tau), np.zeros(M.shape))
 
-    def svd_threshold(self, M, tau):
+    def svd_threshold(self, M, tau, upper_rank=None):
         U, S, V = np.linalg.svd(M, full_matrices=False)
-        return np.dot(U, np.dot(np.diag(self.shrink(S, tau)), V))
+        S_shrink = self.shrink(S, tau)
+        rank = (S_shrink > 0).sum()
+        if upper_rank is not None and upper_rank < rank:
+            rank = upper_rank
+        return np.dot(U[:, :rank], np.dot(np.diag(S_shrink[:rank]), V[:rank, :])), rank
 
-    def fit(self, tol=None, max_iter=1000, iter_print=100, verbose=True):
+    def fit(self, tol=None, max_iter=1000, iter_print=100, verbose=True, upper_rank=None, output_rank=False):
         iter = 0
         err = np.Inf
         Sk = self.S
         Yk = self.Y
         Lk = np.zeros(self.D.shape)
+        rk = 0
 
         if tol:
             _tol = tol
@@ -62,8 +67,8 @@ class R_pca:
         #this loop implements the principal component pursuit (PCP) algorithm
         #located in the table on page 29 of https://arxiv.org/pdf/0912.3599.pdf
         while (err > _tol) and iter < max_iter:
-            Lk = self.svd_threshold(
-                self.D - Sk + self.mu_inv * Yk, self.mu_inv)                            #this line implements step 3
+            Lk, rk = self.svd_threshold(
+                self.D - Sk + self.mu_inv * Yk, self.mu_inv, upper_rank)                            #this line implements step 3
             Sk = self.shrink(
                 self.D - Lk + (self.mu_inv * Yk), self.mu_inv * self.lmbda)             #this line implements step 4
             Yk = Yk + self.mu * (self.D - Lk - Sk)                                      #this line implements step 5
@@ -74,7 +79,10 @@ class R_pca:
 
         self.L = Lk
         self.S = Sk
-        return Lk, Sk
+        if output_rank:
+            return Lk, Sk, rk
+        else:
+            return Lk, Sk
 
     def plot_fit(self, size=None, tol=0.1, axis_on=True):
 
@@ -106,26 +114,33 @@ def wtt_rpca_preprocessing_v1(
     input_vector,
     d,
     modes,
+    upper_ranks=None,
     lambda_scale=1.0,
     max_iter=1000,
     verbose=True,
 ):
     
     sparse_parts = []
+    true_ranks = []
     prod_modes = input_vector.size
     
     assert len(modes) == d
     assert prod_modes == np.prod(modes)
+    if upper_ranks is not None:
+        assert len(upper_ranks) == d - 1
     
     A = input_vector
     for k in range(d):
         A = A.reshape((-1, prod_modes // modes[k]), order='F')
+        r_up = None if upper_ranks is None else (1 if k + 1 == d else upper_ranks[k])
 
         rpca = R_pca(A) 
         rpca.lmbda = rpca.lmbda * lambda_scale      
-        L, S = rpca.fit(
+        L, S, r = rpca.fit(
             max_iter=max_iter,
-            verbose=verbose
+            verbose=verbose,
+            upper_rank=r_up,
+            output_rank=True
         )
         if A.shape[0] <= A.shape[1]:
             sparse_parts.append(scipy.sparse.csr_matrix(S))
@@ -142,9 +157,12 @@ def wtt_rpca_preprocessing_v1(
                 "\nnnz(S) = ", np.count_nonzero(S),
                 sep=''
             )
+            
+        if k + 1 < d:
+            true_ranks.append(r)
 
     smoothed_signal = A.flatten(order='F')
-    return smoothed_signal, sparse_parts
+    return smoothed_signal, sparse_parts, true_ranks
 
 class R_pca_tensorised:
 
